@@ -1,7 +1,7 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
-#include "NetworkGame.h"
-#include "LanRoomDialog.h"
-#include "GameTheme.h"
+#include "network/NetworkGame.h"
+#include "ui/LanRoomDialog.h"
+#include "ui/GameTheme.h"
 #include <QApplication>
 #include <QFontDatabase>
 #include <QTest>

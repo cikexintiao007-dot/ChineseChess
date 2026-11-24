@@ -15,12 +15,9 @@ set "SEVENZIP=C:\Program Files\7-Zip\7z.exe"
 set "VCVARSALL=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
 
 :: ============================================================
-:: Version override: set a value here to skip CMakeLists.txt parsing
-::   e.g.  set "VERSION_OVERRIDE=7.3.0"
-:: Leave empty to auto-detect from CMakeLists.txt
+:: Read the version from CMakeLists.txt by default.
+:: For an explicit packaging override, set VERSION_OVERRIDE before running.
 :: ============================================================
-set "VERSION_OVERRIDE=7.4.0"
-
 if defined VERSION_OVERRIDE (
     for /f "tokens=1,2,3 delims=." %%a in ("!VERSION_OVERRIDE!") do (
         set VER_MAJOR=%%a

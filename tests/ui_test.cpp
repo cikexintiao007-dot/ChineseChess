@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "MachineGame.h"
-#include "ChooseMainWindow.h"
-#include "GameTheme.h"
-#include "GameResultDialog.h"
+#include "game/MachineGame.h"
+#include "ui/ChooseMainWindow.h"
+#include "ui/GameTheme.h"
+#include "ui/GameResultDialog.h"
 #include <QCheckBox>
 #include <QListWidget>
 #include <QSignalSpy>
@@ -12,8 +12,10 @@
 #include <QDir>
 #include <QTemporaryDir>
 #include <QSettings>
+#include <QScreen>
 #include <QDialogButtonBox>
-#include "PuzzleGame.h"
+#include "game/PuzzleGame.h"
+#include "game/SwapPuzzleGame.h"
 #include <QApplication>
 #include <QFontDatabase>
 #include <QFile>
@@ -27,12 +29,17 @@
 #include <random>
 #include <vector>
 #include <stdexcept>
-#include "ChessSearch.h"
-#include "ReplayGame.h"
-#include "GamePages.h"
-#include "GameSession.h"
+#include "core/ChessRules.h"
+#include "core/ChessSearch.h"
+#include "game/ReplayGame.h"
+#include "ui/GamePages.h"
+#include "game/GameSession.h"
+#include "game/PlayerProfiles.h"
 #include <QTabWidget>
 #include <QSlider>
+#include <QTableWidget>
+#include <QLineEdit>
+#include <QUuid>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -185,6 +192,233 @@ QDialog *waitForResult(ChessBoard &game)
         QTest::qWait(5);
     }
     throw std::runtime_error("result dialog did not open");
+}
+
+void verifySwapChallenge(ChooseMainWindow &menu)
+{
+    auto *entry = menu.findChild<QPushButton *>("menuSwapPuzzleButton");
+    require(entry && entry->isVisible(), "swap challenge is missing from the main menu");
+    QTimer::singleShot(0, &menu, [&menu] {
+        if (auto *page = menu.findChild<QDialog *>("puzzleSelectionPage"))
+            if (auto *start = page->findChild<QPushButton *>("startPuzzleButton")) start->click();
+    });
+    entry->click();
+    SwapPuzzleGame *game = nullptr;
+    for (auto *window : QApplication::topLevelWidgets()) {
+        if (auto *candidate = dynamic_cast<SwapPuzzleGame *>(window); candidate && candidate->isVisible())
+            game = candidate;
+    }
+    require(game && !menu.isVisible(), "swap challenge did not open");
+    game->resize(760, 500);
+    QTest::qWait(30);
+    auto *advance = game->findChild<QPushButton *>("swapAdvanceButton");
+    require(advance && !advance->isVisible() && !game->isAiRed() && !game->m_bReverseView,
+            "attack round began with incorrect controls or side");
+    const auto startingPosition = ChessRules::positionKey(game->m_ChessPieces, game->m_bIsRed);
+    const auto playBestHumanMove = [&] {
+        require(QTest::qWaitFor([&] {
+            return game->m_bIsOver || (game->m_bIsRed != game->isAiRed() && !game->isMoveAnimating());
+        }, 5000), "swap challenge AI did not finish");
+        if (game->m_bIsOver) return;
+        ChessSearch::Position position;
+        std::copy_n(game->m_ChessPieces, position.size(), position.begin());
+        auto canceled = std::make_shared<std::atomic_bool>(false);
+        ChessSearch search(position, game->m_bIsRed, game->m_bIsRed, true, canceled);
+        const auto move = search.bestMove(5, 2000).move;
+        require(move.moveId != -1, "swap challenge did not have a legal human move");
+        QPointF origin;
+        qreal side;
+        require(game->boardTransform(origin, side), "swap challenge cannot locate board");
+        const auto click = [&](int row, int col) {
+            QTest::mouseClick(game, Qt::LeftButton, Qt::NoModifier,
+                              (origin + game->center(row, col) * (side / 960.0)).toPoint());
+        };
+        const auto before = game->m_ChessSteps.size();
+        click(move.rowFrom, move.colFrom);
+        click(move.rowTo, move.colTo);
+        require(game->m_ChessSteps.size() > before, "swap challenge rejected a legal human move");
+    };
+    for (int i = 0; i < 3; ++i) playBestHumanMove();
+    require(QTest::qWaitFor([&] { return advance->isVisible(); }, 5000) &&
+                game->outcome() == ChessBoard::Outcome::RedWon && game->m_ChessSteps.size() == 5,
+            "winning attack was not recognized within three red moves");
+    require(!game->findChild<QDialog *>("gameResultDialog"), "normal result dialog interrupted swap challenge");
+    const auto attack = game->gameRecord();
+    advance->click();
+    require(game->isAiRed() && game->m_bReverseView && !advance->isVisible() &&
+                ChessRules::positionKey(game->m_ChessPieces, game->m_bIsRed) == startingPosition,
+            "defense did not restart the same position with colors swapped");
+    playBestHumanMove();
+    require(QTest::qWaitFor([&] { return advance->isVisible(); }, 5000) &&
+                game->outcome() == ChessBoard::Outcome::Draw && game->m_ChessSteps.size() == 3 &&
+                game->findChild<QLabel *>("headerState")->text() == QStringLiteral("目标达成"),
+            "surviving two red moves was not recognized");
+    bool compared = false;
+    QTimer::singleShot(0, game, [&] {
+        auto *page = game->findChild<QDialog *>("swapComparison");
+        if (!page) return;
+        QList<ReplayGame *> replays;
+        for (auto *widget : page->findChildren<QWidget *>()) {
+            if (auto *replay = dynamic_cast<ReplayGame *>(widget)) replays.append(replay);
+        }
+        if (replays.size() == 2) {
+            auto *left = replays[0]->findChild<QSlider *>("replaySlider");
+            auto *right = replays[1]->findChild<QSlider *>("replaySlider");
+            QPointF origin;
+            qreal side;
+            if (left && right && replays[0]->isVisible() && replays[1]->isVisible() &&
+                replays[0]->boardTransform(origin, side) && replays[1]->boardTransform(origin, side) &&
+                left->maximum() == attack.moves.size() && right->maximum() == 3 &&
+                !replays[0]->m_bReverseView && !replays[1]->m_bReverseView &&
+                replays[0]->gameRecord().validate() && replays[1]->gameRecord().validate()) {
+                left->setValue(0);
+                compared = replays[0]->m_ChessSteps.isEmpty() && right->value() == right->maximum() &&
+                           ChessRules::positionKey(replays[0]->m_ChessPieces, replays[0]->m_bIsRed) == startingPosition;
+            }
+        }
+        page->reject();
+    });
+    advance->click();
+    require(compared, "side-by-side replays did not load or seek independently");
+    game->close();
+    require(QTest::qWaitFor([&] { return menu.isVisible(); }, 1000), "swap challenge did not return to menu");
+}
+
+void verifyPlayerRanking(ChooseMainWindow &menu, QPushButton *localMode)
+{
+    auto *entry = menu.findChild<QPushButton *>("menuPlayersButton");
+    require(entry && entry->isVisible(), "players menu entry is missing");
+    bool created = false;
+    QTimer::singleShot(0, &menu, [&] {
+        auto *page = menu.findChild<QDialog *>("playerProfilesPage");
+        if (!page) return;
+        auto *add = page->findChild<QPushButton *>("playerAddButton");
+        auto *table = page->findChild<QTableWidget *>("playerStandings");
+        if (add && table && table->rowCount() == 0) {
+            for (const QString &name : {QStringLiteral("松风"), QStringLiteral("竹影")}) {
+                QTimer::singleShot(0, page, [page, name] {
+                    auto *edit = page->findChild<QDialog *>("playerEditPage");
+                    if (!edit) return;
+                    edit->findChild<QLineEdit *>("playerNickname")->setText(name);
+                    edit->findChild<QPushButton *>("playerSaveButton")->click();
+                });
+                add->click();
+            }
+            created = table->rowCount() == 2 && table->item(0, 0)->text() == QStringLiteral("—");
+        }
+        page->reject();
+    });
+    entry->click();
+    QVector<PlayerProfile> profiles;
+    require(created && PlayerProfiles::load(profiles) && profiles.size() == 2, "could not create two durable profiles");
+    const auto red = profiles[0];
+    const auto black = profiles[1];
+    PlayerProfile duplicate{{}, red.name, red.avatar};
+    require(!PlayerProfiles::save(duplicate), "duplicate nickname accepted");
+
+    bool identityGuarded = false;
+    QTimer::singleShot(0, &menu, [&] {
+        auto *page = menu.findChild<QDialog *>("matchSetupPage");
+        if (!page) return;
+        auto *redChoice = page->findChild<QComboBox *>("matchRedProfile");
+        auto *blackChoice = page->findChild<QComboBox *>("matchBlackProfile");
+        auto *start = page->findChild<QPushButton *>("matchSetupStart");
+        if (redChoice && blackChoice && start) {
+            redChoice->setCurrentIndex(redChoice->findData(red.id));
+            blackChoice->setCurrentIndex(blackChoice->findData(red.id));
+            identityGuarded = !start->isEnabled();
+            blackChoice->setCurrentIndex(blackChoice->findData(black.id));
+            if (start->isEnabled()) start->click();
+            else page->reject();
+        } else {
+            page->reject();
+        }
+    });
+    localMode->click();
+    const auto openBoard = [] {
+        for (auto *window : QApplication::topLevelWidgets())
+            if (auto *board = qobject_cast<ChessBoard *>(window); board && board->isVisible()) return board;
+        return static_cast<ChessBoard *>(nullptr);
+    };
+    auto *board = openBoard();
+    require(identityGuarded && board && board->gameRecord().redPlayerId == red.id
+                && board->gameRecord().blackPlayerId == black.id, "player selections did not reach board");
+    humanMove(*board);
+    ChessRecord saved;
+    const QString session = GameSession::latest(saved);
+    require(!session.isEmpty() && saved.redPlayerId == red.id && saved.blackPlayerId == black.id,
+            "unfinished rated match did not retain its identities");
+    board->close();
+    require(QTest::qWaitFor([&] { return menu.isVisible(); }, 1000), "could not return to menu after saving");
+    menu.findChild<QPushButton *>("menuContinueButton")->click();
+    board = openBoard();
+    require(board && board->gameRecord().redPlayerId == red.id && board->gameRecord().blackPlayerId == black.id
+                && board->m_ChessSteps.size() == 1 && !board->m_bIsRed,
+            "continuing a rated match changed the identity or positions");
+    QTimer::singleShot(0, board, [board] {
+        if (auto *confirmation = board->findChild<QMessageBox *>())
+            confirmation->button(QMessageBox::Yes)->click();
+    });
+    board->findChild<QPushButton *>("resignButton")->click();
+    waitForResult(*board)->findChild<QPushButton *>("resultReview")->click();
+    const auto finished = board->gameRecord();
+    require(finished.outcome == 1 && GameSession::save(session, finished, nullptr)
+                && !GameSession::save(session, saved, nullptr), "a completed match could be reopened or not resaved");
+    auto conflicting = finished;
+    conflicting.outcome = 2;
+    require(!GameSession::save(session, conflicting, nullptr), "conflicting result replaced the first settlement");
+    board->close();
+    require(QTest::qWaitFor([&] { return menu.isVisible(); }, 1000), "menu did not return after rated match");
+
+    auto guest = finished;
+    guest.blackPlayerId.clear();
+    auto empty = finished;
+    empty.moves.clear();
+    auto computer = guest;
+    computer.computer = true;
+    computer.redPlayerId.clear();
+    require(GameSession::save(GameSession::newId(), guest, nullptr)
+        && GameSession::save(GameSession::newId(), empty, nullptr)
+        && GameSession::save(GameSession::newId(), computer, nullptr), "unable to save unranked fixtures");
+    auto draw = finished;
+    draw.outcome = 3;
+    draw.reason = QStringLiteral("双方同意和棋");
+    require(GameSession::save(GameSession::newId(), draw, nullptr), "draw fixture could not be saved");
+    auto renamed = red;
+    renamed.name = QStringLiteral("松风棋手");
+    renamed.avatar = QStringLiteral("马");
+    require(PlayerProfiles::save(renamed) && PlayerProfiles::load(profiles) && renamed.id == red.id,
+            "updating a profile changed its identity");
+    const auto matches = PlayerProfiles::ratedMatches(profiles);
+    const auto standings = PlayerProfiles::standings(profiles, matches);
+    require(matches.size() == 2 && standings.size() == 2 && standings[0].profile.name == renamed.name
+                && standings[0].points() == 4 && standings[0].wins == 1 && standings[0].draws == 1
+                && standings[1].points() == 1 && standings[1].losses == 1,
+            "ranking lost history, double-counted a game, or included an ineligible match");
+    bool compared = false;
+    QTimer::singleShot(0, &menu, [&] {
+        auto *page = menu.findChild<QDialog *>("playerProfilesPage");
+        if (!page) return;
+        auto *table = page->findChild<QTableWidget *>("playerStandings");
+        auto *opponents = page->findChild<QPushButton *>("playerHeadToHeadButton");
+        if (table && table->rowCount() == 2 && table->item(0, 2)->text() == QStringLiteral("4") && opponents) {
+            opponents->click();
+            auto *history = page->findChild<QListWidget *>("headToHeadMatches");
+            auto *replay = page->findChild<QPushButton *>("headToHeadReplay");
+            if (history && history->count() == 2 && replay && replay->isEnabled()) {
+                compared = true;
+                replay->click();
+                if (!page->isVisible()) return;
+            }
+        }
+        page->reject();
+    });
+    entry->click();
+    auto *replay = dynamic_cast<ReplayGame *>(openBoard());
+    require(compared && replay && replay->gameRecord().moves.size() == 1 &&
+                replay->gameRecord().redPlayerId == red.id, "could not replay a head-to-head game");
+    replay->close();
+    require(QTest::qWaitFor([&] { return menu.isVisible(); }, 1000), "could not return to lobby from ranked replay");
 }
 
 void verifyRepetitions()
@@ -422,7 +656,7 @@ int main(int argc, char **argv)
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
     app.setOrganizationName("ChineseChessTests");
-    app.setApplicationName("ui");
+    app.setApplicationName(QStringLiteral("ui-") + QUuid::createUuid().toString(QUuid::WithoutBraces));
     auto preferences = GamePreferences::load();
     preferences.confirmExit = false;
     preferences.sound = false;
@@ -461,6 +695,9 @@ int main(int argc, char **argv)
         app.setPalette(darkPalette);
         ChooseMainWindow menu;
         require(menu.windowTitle() == QStringLiteral("中国象棋"), "main menu title contains version");
+        const QSize availableMenuSize = menu.screen()->availableGeometry().size() - QSize(32, 56);
+        require(menu.size() == QSize(620, 680).boundedTo(availableMenuSize).expandedTo(menu.minimumSize()),
+                "main menu startup size does not follow available screen space");
         menu.show();
         QTest::qWait(50);
         auto modeButtons = menu.findChildren<QPushButton *>(QString(), Qt::FindDirectChildrenOnly);
@@ -469,6 +706,8 @@ int main(int argc, char **argv)
         modeButtons.removeAll(menu.findChild<QPushButton *>("menuGuideButton"));
         modeButtons.removeAll(menu.findChild<QPushButton *>("menuSetupButton"));
         modeButtons.removeAll(menu.findChild<QPushButton *>("menuContinueButton"));
+        modeButtons.removeAll(menu.findChild<QPushButton *>("menuSwapPuzzleButton"));
+        modeButtons.removeAll(menu.findChild<QPushButton *>("menuPlayersButton"));
         require(modeButtons.size() == 4, "menu must have four modes");
         for (auto *button : modeButtons)
         {
@@ -602,6 +841,8 @@ int main(int argc, char **argv)
         require(menu.isVisible(), "closing library replay did not return to menu");
         std::cout << "PASS guide tabs and recent library to replay navigation" << std::endl;
         verifyTimedMatch(menu, modeButtons[0], output);
+        verifySwapChallenge(menu);
+        verifyPlayerRanking(menu, modeButtons[0]);
         QTimer chooseDefaults;
         QObject::connect(&chooseDefaults, &QTimer::timeout, [&output]() {
             if (auto *page = QApplication::activeModalWidget()) {

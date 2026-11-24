@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ChessRules.h"
-#include "ChessSearch.h"
-#include "PuzzleData.h"
+#include "core/ChessRules.h"
+#include "core/ChessSearch.h"
+#include "game/PuzzleData.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -80,11 +80,34 @@ void verifySearchCache()
               << " hits=" << after.cacheHits << '\n';
 }
 
+void verifySwapPuzzles()
+{
+    const auto puzzles = getSwapPuzzles();
+    require(puzzles.size() == 3, "wrong number of swap puzzles");
+    for (const auto &puzzle : puzzles) {
+        ChessSearch::Position position;
+        clear(position.data());
+        for (const auto &piece : puzzle.pieces)
+            place(position.data(), piece.id, piece.row, piece.col);
+        const ChessRules rules(position.data());
+        require(puzzle.redFirst && puzzle.playerIsRed && !rules.isInCheck(false) && !rules.isInCheck(true),
+                "swap puzzle starts with the wrong turn or in check");
+        auto canceled = std::make_shared<std::atomic_bool>(false);
+        ChessSearch search(position, true, true, true, canceled);
+        const auto shortSearch = search.bestMove(3, 10000);
+        const auto longSearch = search.bestMove(5, 10000);
+        require(shortSearch.completedDepth == 3 && shortSearch.score < 99999 &&
+                longSearch.completedDepth == 5 && longSearch.score >= 99999,
+                "swap puzzle must allow defense through two red moves and forced victory in three");
+    }
+}
+
 int main()
 {
     try
     {
         verifySearchCache();
+        verifySwapPuzzles();
         ChessPieces pieces[32];
         for (int id = 0; id < 32; ++id)
             pieces[id].init(id);

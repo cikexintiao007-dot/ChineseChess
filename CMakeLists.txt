@@ -30,6 +30,7 @@ add_definitions(-DXBUILD_TIME="2026.02.04")
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -77,53 +78,61 @@ else()
     message(WARNING "Qt bin directory could not be deduced; deploy helpers may be skipped.")
 endif()
 
-set(src_files
-    main.cpp
-    GameTheme.h
-    GamePages.h
-    GamePages.cpp
-    GameSession.h
-    GameSession.cpp
-    PositionEditor.h
-    PositionEditor.cpp
-    GameSettings.h
-    GameSettings.cpp
-    GameResultDialog.h
-    GameResultDialog.cpp
-    ChessBoard.h
-    ChessBoard.cpp
-    ChessBoard.ui
-    ChessPieces.h
-    ChessPieces.cpp
-    ChessStep.h
-    ChessStep.cpp
-    ChessRecord.h
-    ChessRecord.cpp
-    ReplayGame.h
-    ReplayGame.cpp
-    ChessVoice.h
-    ChessVoice.cpp
-    MachineGame.h
-    MachineGame.cpp
-    ChessRules.h
-    ChessRules.cpp
-    ChessSearch.h
-    ChessSearch.cpp
-    ChooseMainWindow.h
-    ChooseMainWindow.cpp
-    LanRoom.h
-    LanRoom.cpp
-    LanRoomDialog.h
-    LanRoomDialog.cpp
-    NetworkGame.h
-    NetworkGame.cpp
-    PuzzleData.h
-    PuzzleData.cpp
-    PuzzleGame.h
-    PuzzleGame.cpp
+set(chess_sources
+    src/app/ChessVoice.cpp
+    src/app/ChessVoice.h
+    src/app/GameSettings.cpp
+    src/app/GameSettings.h
+
+    src/core/ChessPieces.cpp
+    src/core/ChessPieces.h
+    src/core/ChessRecord.cpp
+    src/core/ChessRecord.h
+    src/core/ChessRules.cpp
+    src/core/ChessRules.h
+    src/core/ChessSearch.cpp
+    src/core/ChessSearch.h
+    src/core/ChessStep.cpp
+    src/core/ChessStep.h
+
+    src/game/GameSession.cpp
+    src/game/GameSession.h
+    src/game/MachineGame.cpp
+    src/game/MachineGame.h
+    src/game/PlayerProfiles.cpp
+    src/game/PlayerProfiles.h
+    src/game/PuzzleData.cpp
+    src/game/PuzzleData.h
+    src/game/PuzzleGame.cpp
+    src/game/PuzzleGame.h
+    src/game/ReplayGame.cpp
+    src/game/ReplayGame.h
+    src/game/SwapPuzzleGame.cpp
+    src/game/SwapPuzzleGame.h
+
+    src/network/LanRoom.cpp
+    src/network/LanRoom.h
+    src/network/NetworkGame.cpp
+    src/network/NetworkGame.h
+
+    src/ui/ChessBoard.cpp
+    src/ui/ChessBoard.h
+    src/ui/ChessBoard.ui
+    src/ui/ChooseMainWindow.cpp
+    src/ui/ChooseMainWindow.h
+    src/ui/GamePages.cpp
+    src/ui/GamePages.h
+    src/ui/GameResultDialog.cpp
+    src/ui/GameResultDialog.h
+    src/ui/GameTheme.h
+    src/ui/LanRoomDialog.cpp
+    src/ui/LanRoomDialog.h
+    src/ui/PlayerPage.cpp
+    src/ui/PlayerPage.h
+    src/ui/PositionEditor.cpp
+    src/ui/PositionEditor.h
 
     resources/res.qrc
-    resources/logo/resources.rc
 )
 
 #********************************************** 判断且定义 x64/x86 变量 (get kit architecture bit) ****************************
@@ -188,13 +197,21 @@ endforeach()
 #file(COPY "${CMAKE_SOURCE_DIR}/xconfig.ini" DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 #******************************************* **********************************************
 
-add_executable(${project_name} ${src_files})
+add_executable(${project_name} src/app/main.cpp ${chess_sources} resources/logo/resources.rc)
+target_include_directories(${project_name} PRIVATE src)
 target_link_libraries(${project_name} PRIVATE ${qt_version_moduls})
 
 option(BUILD_TESTING "Build chess regression tests" OFF)
 if(BUILD_TESTING)
     enable_testing()
-    add_executable(chess_rules_test tests/rules_test.cpp ChessRules.cpp ChessPieces.cpp ChessSearch.cpp PuzzleData.cpp)
+    add_executable(chess_rules_test
+        tests/rules_test.cpp
+        src/core/ChessRules.cpp
+        src/core/ChessPieces.cpp
+        src/core/ChessSearch.cpp
+        src/game/PuzzleData.cpp
+    )
+    target_include_directories(chess_rules_test PRIVATE src)
     set_target_properties(chess_rules_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/tests")
     target_link_libraries(chess_rules_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
     if(MSVC)
@@ -202,10 +219,9 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME chess_rules COMMAND chess_rules_test)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
-    set(test_sources ${src_files})
-    list(REMOVE_ITEM test_sources main.cpp resources/logo/resources.rc)
     foreach(test_name ui network)
-        add_executable(chess_${test_name}_test tests/${test_name}_test.cpp ${test_sources})
+        add_executable(chess_${test_name}_test tests/${test_name}_test.cpp ${chess_sources})
+        target_include_directories(chess_${test_name}_test PRIVATE src)
         target_link_libraries(chess_${test_name}_test PRIVATE ${qt_version_moduls} Qt${QT_VERSION_MAJOR}::Test)
         set_target_properties(chess_${test_name}_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/tests")
         if(MSVC)
